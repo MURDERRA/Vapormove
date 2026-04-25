@@ -1,66 +1,159 @@
 # Vapormove
 
-Vaporwave-style trail effects for Hyprland, built with Quickshell.
+Vaporwave motion trail effects for Hyprland (Wayland) and X11.
+Draws a fading gradient trail behind the cursor and dragged windows.
 
-Two independent effects:
-- **Window trail** — a blue-violet ghost follows dragged windows, rendered below all windows
-- **Cursor trail** — a cyan-to-violet fading arrow trail follows the cursor
+Written in Go with cgo for native Wayland (wlr-layer-shell + EGL/OpenGL)
+and X11 (XComposite + GLX) backends.
+
+## Features
+
+- Cursor trail with configurable gradient (default: cyan to violet)
+- Window drag trail rendered below all windows (Katana Zero style ghosts)
+- Multi-monitor support: trails appear on the correct monitor
+- Hot-configurable: colors, trail length, fade duration
+- Wayland: native wlr-layer-shell overlay, input pass-through
+- X11: XComposite overlay window, XShape input pass-through
+- Config file (TOML) and CLI flags, flags override config file
 
 ## Dependencies
 
-- [Hyprland](https://hyprland.org)
-- [Quickshell](https://quickshell.org)
+Runtime:
 
-## Installation
+- Wayland backend: `wayland-client`, `wayland-egl`, `egl`, `gl`
+- X11 backend: `libX11`, `libXcomposite`, `libXfixes`, `libGL`, `xdotool`
+- `hyprctl` in PATH (Wayland cursor/window position)
 
-Clone the repository:
+Build:
 
-```fish
-git clone https://github.com/yourusername/Vapormove ~/.config/quickshell/vapormove
+- Go 1.22+
+- `gcc` / `clang`
+- `pkg-config`
+- `wayland-scanner`
+- `wlr-protocols` (for layer-shell header generation)
+
+On Arch Linux:
+
+```sh
+sudo pacman -S go gcc wayland wayland-protocols mesa libxcomposite xdotool
+# wlr-protocols from AUR:
+yay -S wlr-protocols
 ```
 
-The repository contains two separate configs:
+## Build
 
+```sh
+git clone https://github.com/MURDERRA/Vapormove
+cd vapormove
+
+# Generate wayland protocol bindings (once)
+make generate
+
+# Build
+make build
+
+# Install to /usr/local/bin
+sudo make install
 ```
-vapormove/
-├── vaportrail/
-│   └── shell.qml       # window trail
-└── cursortrail/
-│   └── shell.qml       # cursor trail
-└── README.md
+
+## Usage
+
+```sh
+# Auto-detect backend (wayland if WAYLAND_DISPLAY is set, else x11)
+vapormove
+
+# Force backend
+vapormove --backend wayland
+vapormove --backend x11
+
+# Override trail settings via flags
+vapormove --cursor-length 32 --cursor-fade 500
+vapormove --no-window        # cursor trail only
+vapormove --no-cursor        # window trail only
+
+# Print default config and exit
+vapormove --dump-config > ~/.config/vapormove/config.toml
 ```
+
+## Configuration
+
+Default config location: `$XDG_CONFIG_HOME/vapormove/config.toml`
+(usually `~/.config/vapormove/config.toml`)
+
+Generate default config:
+
+```sh
+mkdir -p ~/.config/vapormove
+vapormove --dump-config > ~/.config/vapormove/config.toml
+```
+
+Example config:
+
+```toml
+# Force backend: "wayland" or "x11" (default: auto-detect)
+# backend = "wayland"
+
+[cursor]
+length     = 24      # number of trail points
+fade_ms    = 400     # fade duration in milliseconds
+point_size = 6.0     # point radius in pixels
+
+[[cursor.gradient]]
+position = 0.0
+color    = "#00eeffcc"   # tip: cyan
+
+[[cursor.gradient]]
+position = 0.5
+color    = "#8822ffaa"   # mid: violet
+
+[[cursor.gradient]]
+position = 1.0
+color    = "#cc00ff44"   # tail: purple fade
+
+[window]
+length  = 12
+fade_ms = 380
+
+[[window.gradient]]
+position = 0.0
+color    = "#1144ffcc"
+
+[[window.gradient]]
+position = 0.5
+color    = "#7711ee88"
+
+[[window.gradient]]
+position = 1.0
+color    = "#cc11aa33"
+```
+
+Colors are in `#RRGGBB` or `#RRGGBBAA` format.
+Gradient `position` is in [0.0, 1.0]: 0 = tip (newest point), 1 = tail (oldest).
+
+## Autostart
 
 Add to `~/.config/hypr/hyprland.conf`:
 
 ```ini
-exec-once = qs -c vaportrail
-exec-once = qs -c cursortrail
+exec-once = vapormove
 ```
 
-## How it works
+Or with systemd user session:
 
-**Window trail** listens to Hyprland socket2 events via `Hyprland.rawEvent`. When a window is being dragged, `activewindow` events fire continuously. On each event, `hyprctl activewindow -j` is called in a tight chain to poll the window position. A ghost rectangle is spawned at the previous position, creating a trail behind the window. The overlay runs on `WlrLayer.Bottom` so it renders beneath all windows.
+```sh
+# ~/.config/systemd/user/vapormove.service
+[Unit]
+Description=Vaporwave motion trail
+PartOf=graphical-session.target
 
-**Cursor trail** polls `hyprctl cursorpos -j` in a continuous chain (no timer) for maximum update rate. On each position change, a cursor-shaped ghost is spawned at the old position. Each ghost receives a `trailIndex` that increments every frame, shifting its color from cyan (fresh, near cursor) to violet (old, end of trail). The overlay runs on `WlrLayer.Overlay` with an empty input region so clicks pass through.
+[Service]
+ExecStart=/usr/local/bin/vapormove
+Restart=on-failure
 
-## Customization
+[Install]
+WantedBy=graphical-session.target
+```
 
-**Window trail** — edit `vaportrail/shell.qml`:
-
-| Property              | Description             |
-| --------------------- | ----------------------- |
-| `duration: 380`       | fade-out duration in ms |
-| `GradientStop` colors | trail color scheme      |
-
-**Cursor trail** — edit `cursortrail/shell.qml`:
-
-| Property          | Description                                         |
-| ----------------- | --------------------------------------------------- |
-| `trailLength: 18` | number of ghosts in the gradient                    |
-| `duration: 380`   | fade-out duration in ms                             |
-| `x: dotX - 50`    | cursor hotspot offset, adjust for your cursor theme |
-| `y: dotY - 10`    | cursor hotspot offset, adjust for your cursor theme |
-
-## Cursor hotspot offset
-
-The `x (dotX) or y (dotY)` value in `cursortrail/shell.qml` depends on your cursor theme. If the ghost does not align with your cursor, adjust the offset until it matches.
+```sh
+systemctl --user enable --now vapormove
+```
