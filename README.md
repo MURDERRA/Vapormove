@@ -44,7 +44,7 @@ yay -S wlr-protocols
 
 ```sh
 git clone https://github.com/MURDERRA/Vapormove
-cd vapormove
+cd Vapormove
 
 # Generate wayland protocol bindings (once)
 make generate
