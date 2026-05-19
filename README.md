@@ -1,5 +1,7 @@
 # Vapormove
 
+[Preview](https://jumpshare.com/share/gPIu4deVMTjIyBoIqA7X)
+
 Vaporwave motion trail effects for Hyprland (Wayland) and X11.
 Draws a fading gradient trail behind the cursor and dragged windows.
 
