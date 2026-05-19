@@ -56,6 +56,24 @@ make build
 sudo make install
 ```
 
+## Installation from Packages
+
+Pre-built packages are available in the repository root:
+
+- **Debian/Ubuntu**: `sudo dpkg -i vapormove_0.1.0_amd64.deb`
+- **Fedora/RHEL**: `sudo rpm -i vapormove-0.1.0-1.x86_64.rpm`
+- **Arch Linux**: `sudo pacman -U vapormove-0.1.0-1-x86_64.pkg.tar.zst`
+
+### AUR (Arch User Repository)
+
+You can also install via AUR using an AUR helper:
+
+```sh
+yay -S vapormove
+# or
+paru -S vapormove
+```
+
 ## Usage
 
 ```sh

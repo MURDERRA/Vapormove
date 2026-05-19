@@ -34,3 +34,8 @@ go.work.sum
 
 AGENTS.md
 .crush/
+vapormove/
+vapormove-0.1.0-1-x86_64.pkg.tar.zst
+vapormove-0.1.0-1.x86_64.rpm
+vapormove-0.1.0.tar.gz
+vapormove_0.1.0_amd64.deb
