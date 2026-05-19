@@ -15,12 +15,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
 	"runtime"
 	"time"
 	"unsafe"
 
 	"vapormove/config"
+	"vapormove/cursor"
 	"vapormove/trail"
 )
 
@@ -39,6 +41,10 @@ type Backend struct {
 
 	// Monitor cache for coordinate translation
 	monitorCache map[int]*MonitorInfo
+
+	// Cursor sprite rendering
+	cursorAtlas  *cursor.Atlas
+	cursorTex    *cursor.TextureManager
 }
 
 // MonitorInfo holds Hyprland monitor position
@@ -62,14 +68,31 @@ func New(cfg *config.Config) (*Backend, error) {
 		return nil, fmt.Errorf("wayland: no outputs found")
 	}
 
-	return &Backend{
+	b := &Backend{
 		cfg: cfg,
 		ctx: ctx,
 		cursorTrail: trail.New(cfg.Cursor),
 		windowTrail: trail.New(cfg.Window),
 		stopCh: make(chan struct{}),
 		monitorCache: make(map[int]*MonitorInfo),
-	}, nil
+		cursorTex: cursor.NewTextureManager(),
+	}
+
+	// Try to load cursor theme
+	if themeName := os.Getenv("XCURSOR_THEME"); themeName != "" {
+		if themePath, err := cursor.FindTheme(themeName); err == nil {
+			b.cursorAtlas = cursor.NewAtlas(32)
+			if loadErr := b.cursorAtlas.LoadTheme(themePath); loadErr != nil {
+				// fall back to builtin
+				b.cursorAtlas = nil
+			}
+		}
+	}
+	if b.cursorAtlas == nil {
+		b.cursorAtlas = cursor.BuiltinAtlas(32)
+	}
+
+	return b, nil
 }
 
 // Run starts the render loop. Blocks until Close() is called.
@@ -129,6 +152,7 @@ func (b *Backend) pollCursor() {
 				dy := pos.Y - lastY
 				if lastX != -99999 && (math.Abs(dx) > 0.5 || math.Abs(dy) > 0.5) {
 					b.cursorTrail.Push(float32(pos.X), float32(pos.Y))
+					fmt.Fprintf(os.Stderr, "[vapormove] pollCursor: push (%.1f,%.1f) dx=%.2f dy=%.2f\n", pos.X, pos.Y, dx, dy)
 				}
 				lastX, lastY = pos.X, pos.Y
 			}
@@ -257,14 +281,80 @@ func (b *Backend) renderAll() {
 		C.glLoadIdentity()
 
 		renderWindowTrail(windowPoints, ox, oy, w, h, b.cfg.Window)
-		renderCursorTrail(cursorPoints, ox, oy, w, h, b.cfg.Cursor)
+		b.renderCursorTrail(cursorPoints, ox, oy, w, h, b.cfg.Cursor)
 
 		C.vm_wl_swap(b.ctx, surf)
 		surf = surf.next
 	}
 }
 
-func renderCursorTrail(points []trail.GhostPoint, ox, oy, sw, sh float32, cfg config.TrailConfig) {
+// renderCursorTrail draws cursor trail as textured sprites.
+// If a cursor atlas is available, it uses the sprite texture.
+// Otherwise, it falls back to a simple circle.
+func (b *Backend) renderCursorTrail(points []trail.GhostPoint, ox, oy, sw, sh float32, cfg config.TrailConfig) {
+	// Get the default cursor sprite
+	sprite := b.cursorAtlas.Get("default")
+	if sprite == nil || sprite.Width == 0 {
+		fmt.Fprintf(os.Stderr, "[vapormove] cursor: no sprite, using circles (len=%d)\n", len(points))
+		b.renderCursorCircles(points, ox, oy, sw, sh, cfg)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[vapormove] cursor: sprite=%dx%d pts=%d atlasPts=%d\n", sprite.Width, sprite.Height, len(points), len(b.cursorAtlas.Sprites))
+
+	// Ensure texture is uploaded
+	if err := b.cursorTex.LoadSprite(sprite); err != nil {
+		b.renderCursorCircles(points, ox, oy, sw, sh, cfg)
+		return
+	}
+
+	C.glEnable(C.GL_TEXTURE_2D)
+	b.cursorTex.Bind()
+	C.glBlendFunc(C.GL_SRC_ALPHA, C.GL_ONE_MINUS_SRC_ALPHA)
+
+	// Ensure texture modulation so glColor4f tints the textured quad.
+	C.glTexEnvi(C.GL_TEXTURE_ENV, C.GL_TEXTURE_ENV_MODE, C.GL_MODULATE)
+
+	// Determine size to draw. For sprite rendering we use the sprite's
+	// native size; PointSize only makes sense for the circle fallback.
+	size := float32(sprite.Width)
+	shScaled := float32(sprite.Height)
+	if size <= 0 {
+		size = 32
+		shScaled = 32
+	}
+	scale := size / float32(sprite.Width)
+
+	for _, p := range points {
+		// Position so the cursor point aligns with the hotspot.
+		// Scale hotspot to match the rendered size.
+		lx := p.X - ox - float32(sprite.HotspotX)*scale
+		ly := p.Y - oy - float32(sprite.HotspotY)*scale
+
+		// Cull if off screen
+		if lx < -size || lx > sw+size || ly < -shScaled || ly > sh+shScaled {
+			continue
+		}
+
+		C.glColor4f(C.GLfloat(p.R), C.GLfloat(p.G), C.GLfloat(p.B), C.GLfloat(p.A))
+
+		// Draw textured quad
+		C.glBegin(C.GL_QUADS)
+		C.glTexCoord2f(0, 0)
+		C.glVertex2f(C.GLfloat(lx), C.GLfloat(ly))
+		C.glTexCoord2f(1, 0)
+		C.glVertex2f(C.GLfloat(lx+size), C.GLfloat(ly))
+		C.glTexCoord2f(1, 1)
+		C.glVertex2f(C.GLfloat(lx+size), C.GLfloat(ly+shScaled))
+		C.glTexCoord2f(0, 1)
+		C.glVertex2f(C.GLfloat(lx), C.GLfloat(ly+shScaled))
+		C.glEnd()
+	}
+
+	C.glDisable(C.GL_TEXTURE_2D)
+}
+
+// renderCursorCircles draws cursor trail using circle geometry (fallback).
+func (b *Backend) renderCursorCircles(points []trail.GhostPoint, ox, oy, sw, sh float32, cfg config.TrailConfig) {
 	radius := cfg.PointSize
 	if radius <= 0 {
 		radius = 6
